@@ -1,8 +1,3 @@
-# ==============================================================================
-# sort.s - Versão final com correção do bug de corrupção de registrador
-#          na função read_line.
-# ==============================================================================
-
 .section .rodata
 msg_comma:    .string ","
 
@@ -139,15 +134,11 @@ print_number:
     la a0, number_buffer; call print_string
     addi s2, s2, 4; addi s1, s1, 1; j main_print_loop_start
 main_end:
-    # ... (código para restaurar registradores da pilha) ...
     lw ra, 28(sp); lw s0, 24(sp); lw s1, 20(sp); lw s2, 16(sp); lw s3, 12(sp)
     addi sp, sp, 32
-
-    # --- Chamada de Semihosting para Encerrar a Simulação ---
-    # Este é o método robusto indicado pelo TUTORIAL.txt
-    li   a0, 0x18      # Código da operação padrão para SYS_EXIT (encerrar)
-    li   a1, 0x20026   # Código que indica "Application Exit" para o depurador
-    ebreak             # Causa a trap para o depurador GDB, que encerrará o QEMU
+    
+    li a0, 0 # Define o código de retorno como 0 (sucesso)
+    ret  
 
 bubblesort:
     addi sp, sp, -16; sw ra, 12(sp); sw s0, 8(sp); sw s1, 4(sp); sw s2, 0(sp)
