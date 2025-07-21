@@ -160,13 +160,13 @@ int main(int argc, char* argv[]) {
 
 	while(run) {
 		mtime++;
-		/*
-		if ((double)(clock() - start_time) / CLOCKS_PER_SEC >= 0.01) {
+		
+		if ((double)(clock() - start_time) / CLOCKS_PER_SEC >= 0.05) {
 			printf("\n--------------------------------------------------------------------------------\n");
 			printf("SIMULATOR TIMEOUT: A simulação excedeu 0.01 segundos e foi encerrada.\n");
 			break; // Sai do loop imediatamente
 		}
-		*/
+		
 
 		if (mtime >= mtimecmp) {
 			mip |= (1 << 7); // Seta o bit MTIP (Machine Timer Interrupt Pending)
@@ -198,7 +198,7 @@ int main(int argc, char* argv[]) {
 		uint32_t mip_meip = (mip >> 11) & 1;
 
 		//timer
-		if (trap_config_done && mstatus_mie && !prev_mstatus_mie && mie_mtie && mip_mtip) {
+		if (trap_config_done && mstatus_mie && mie_mtie && mip_mtip) {
 			mepc = pc;                   // Salva o PC da instrução que seria executada
 			mcause = 0x80000007;         // Causa da interrupção: Machine Timer Interrupt
 			mtval = 0;                   // tval não é usado para esta interrupção
@@ -231,7 +231,7 @@ int main(int argc, char* argv[]) {
 			trap_config_done, mstatus_mie, prev_mstatus_mie, mie_meie, mip_meip);
 
 		// Se a configuração de trap estiver feita e interrupções estiverem habilitadas
-		if (trap_config_done && mstatus_mie && !prev_mstatus_mie && mie_meie && mip_meip) {
+		if (trap_config_done && mstatus_mie && mie_meie && mip_meip) {
 			mepc = pc;                   // Salva o PC da instrução que seria executada
 			mcause = 0x8000000b;         // Causa da interrupção: Machine External Interrupt
 			mtval = 0;                   // tval não é usado para esta interrupção
@@ -240,11 +240,6 @@ int main(int argc, char* argv[]) {
 			snprintf(linha, sizeof(linha), ">interrupt:external\tcause=0x%08x,epc=0x%08x,tval=0x%08x\n", mcause, mepc, mtval);
 			printf("[INTERRUPT] mcause=0x%08x, mepc=0x%08x, mtval=0x%08x\n", mcause, mepc, mtval);
 			fputs(linha, output);
-
-			if ((plic_pending & plic_enable) && (plic_threshold == 0)) {
-				printf("[INTERRUPT] plic_pending=0x%08x, plic_enable=0x%08x, plic_threshold=%u -> MEIP!\n", plic_pending, plic_enable, plic_threshold);
-				mip |= (1 << 11); // MEIP
-			}
 
 			uint32_t handler_addr;
 			if (mtvec & 1) { // Modo vetorado
@@ -289,7 +284,7 @@ int main(int argc, char* argv[]) {
 				pc = handler_addr;
 			}
 
-			if ((mstatus >> 3) & 1) { // se MIE é 1
+			if (mstatus & (3 & 1)) { 
 				mstatus |= (1 << 7);    // seta MPIE
 			} else {
 				mstatus &= ~(1 << 7);   // limpa MPIE
@@ -376,12 +371,20 @@ int main(int argc, char* argv[]) {
 						continue; // Pula para a próxima iteração do loop com o novo pc
 					}
 					if (csr_addr == 0x302) { // mret
-
 						strncpy(nomeInst, "mret", sizeof(nomeInst));
 						snprintf(linha, sizeof(linha),
 							"0x%08x:mret   mepc=0x%08x\n", pci, mepc);
 						fputs(linha, output);
-					
+						
+						// Restaura MIE do bit MPIE e define MPIE=1
+						uint32_t mpie = (mstatus >> 7) & 1;
+						if (mpie) {
+							mstatus |= (1 << 3);  // Habilita MIE
+						} else {
+							mstatus &= ~(1 << 3); // Desabilita MIE
+						}
+						mstatus |= (1 << 7);      // Define MPIE=1
+						
 						pc = mepc;
 						continue;
 					}
@@ -784,21 +787,12 @@ int main(int argc, char* argv[]) {
 						uart_lsr |= 0x20; // THR empty
 						fputc(uart_thr, stdout);
 						fflush(stdout);
-						if (uart_ier & 0x02) { // THR empty interrupt enable
-							mip |= (1 << 11); // MEIP
-							plic_pending |= 0x400; // UART = source 10
-							#if DEBUG_PLIC
-							printf("[DEBUG_PLIC] PC 0x%08x: Escrita na UART (sb) ativou interrupção. Novo plic_pending: 0x%08x\n", pci, plic_pending);
-							#endif
-						}
-						
 					} else if (addr == UART_IER_ADDR) {
 						uart_ier = x[rs2] & 0xFF;
 						if (uart_ier & 0x02) {
 						#if DEBUG_PLIC
 						printf("[DEBUG_PLIC] PC 0x%08x: Escrita em UART_IER_ADDR ativou pendência. plic_pending antes: 0x%08x\n", pci, plic_pending);
 						#endif
-						plic_pending |= 0x400;
 						#if DEBUG_PLIC
 						printf("[DEBUG_PLIC] PC 0x%08x: Novo plic_pending: 0x%08x\n", pci, plic_pending);
 						#endif
