@@ -7,7 +7,8 @@
 #define MEM_SIZE (32 * 1024)
 #define MTIME_ADDR 0x0200bff8
 #define MTIMECMP_ADDR 0x02004000
-#define DEBUG_PLIC 1 
+#define DEBUG_PLIC 0
+#define MIP_MSIP (1 << 3)
 
 #define PLIC_PENDING_ADDR   0x0C001000
 #define PLIC_ENABLE_ADDR    0x0C002000
@@ -63,8 +64,10 @@ int main(int argc, char* argv[]) {
 
 	FILE* input = fopen(argv[1], "r");
 	FILE* output = fopen(argv[2], "w");
+	FILE* terminal_in = fopen(argv[3], "r");
+	FILE* terminal_out = fopen(argv[4], "w");
 
-	if (input == NULL){
+	if (input == NULL || output == NULL || terminal_in == NULL || terminal_out == NULL) {
 		printf("Erro ao abrir o arquivo");
 		exit(1);
 	}
@@ -158,13 +161,14 @@ int main(int argc, char* argv[]) {
 	while(run) {
 		mtime++;
 		
-		if ((double)(clock() - start_time) / CLOCKS_PER_SEC >= 0.01) {
+		
+		if ((double)(clock() - start_time) / CLOCKS_PER_SEC >= 1) {
 			printf("\n--------------------------------------------------------------------------------\n");
-			printf("SIMULATOR TIMEOUT: A simulação excedeu 0.01 segundos e foi encerrada.\n");
+			printf("SIMULATOR TIMEOUT: A simulação excedeu 1 segundos e foi encerrada.\n");
 			break; // Sai do loop imediatamente
 		}
 		
-        // --- ALTERAÇÃO INICIADA: Lógica de checagem de interrupção movida e ajustada ---
+		
 		if (mtime >= mtimecmp) {
 			mip |= (1 << 7); // Seta o bit MTIP (Machine Timer Interrupt Pending)
 		}
@@ -190,7 +194,6 @@ int main(int argc, char* argv[]) {
 			// Caso contrário, garante que a linha de interrupção externa esteja baixa
 			mip &= ~(1 << 11); // Limpa o bit MEIP
 		}
-        // --- ALTERAÇÃO FINALIZADA ---
 
 		uint32_t mstatus_mie = (mstatus >> 3) & 1;
 		uint32_t mie_mtie = (mie >> 7) & 1;
@@ -229,8 +232,7 @@ int main(int argc, char* argv[]) {
 		}
 			
 		
-		printf("trap_config_done: %d, mstatus_mie: %d, prev_mstatus_mie: %d, mie_meie: %d, mip_meip: %d\n",
-			trap_config_done, mstatus_mie, prev_mstatus_mie, mie_meie, mip_meip);
+		//printf("trap_config_done: %d, mstatus_mie: %d, prev_mstatus_mie: %d, mie_meie: %d, mip_meip: %d\n",trap_config_done, mstatus_mie, prev_mstatus_mie, mie_meie, mip_meip);
 
 		// Se a configuração de trap estiver feita e interrupções estiverem habilitadas
 		if (trap_config_done && mstatus_mie && mie_meie && mip_meip) {
@@ -329,33 +331,36 @@ int main(int argc, char* argv[]) {
         uint32_t rs2_val = x[rs2];
 
 		char linha[256];
-		printf("----------------------------------------------------------------------\n"
-       "|   zero=%#010x|   ra=%#010x|   sp=%#010x|    gp=%#010x|\n"
-       "|     tp=%#010x|   t0=%#010x|   t1=%#010x|    t2=%#010x|\n"
-       "|     s0=%#010x|   s1=%#010x|   a0=%#010x|    a1=%#010x|\n"
-       "|     a2=%#010x|   a3=%#010x|   a4=%#010x|    a5=%#010x|\n"
-       "|     a6=%#010x|   a7=%#010x|   s2=%#010x|    s3=%#010x|\n"
-       "|     s4=%#010x|   s5=%#010x|   s6=%#010x|    s7=%#010x|\n"
-       "|     s8=%#010x|   s9=%#010x|  s10=%#010x|   s11=%#010x|\n"
-       "|     t3=%#010x|   t4=%#010x|   t5=%#010x|    t6=%#010x|\n"
-       "----------------------------------------------------------------------\n"
-       "|     pc=%#010x|mtvec=%#010x| mepc=%#010x|mcause=%#010x|\n"
-       "|mstatus=%#010x|  mie=%#010x|mtval=%#010x|   mip=%#010x|\n"
-       "----------------------------------------------------------------------\n"
-       "> 0x%08x <%s>:    %s   %s,%s,0x%x\n"
-       "----------------------------------------------------------------------\n",
-       x[0],  x[1],  x[2],  x[3],
-       x[4],  x[5],  x[6],  x[7],
-       x[8],  x[9],  x[10], x[11],
-       x[12], x[13], x[14], x[15],
-       x[16], x[17], x[18], x[19],
-       x[20], x[21], x[22], x[23],
-       x[24], x[25], x[26], x[27],
-       x[28], x[29], x[30], x[31],
-       pci, mtvec, mepc, mcause,
-       mstatus, mie, mtval, mip,
-       pci, x_label[rd], nomeInst, x_label[rs1], x_label[rs2], imm_i
-	);
+		
+	/*
+	printf("----------------------------------------------------------------------\n"
+	"|   zero=%#010x|   ra=%#010x|   sp=%#010x|    gp=%#010x|\n"
+	"|     tp=%#010x|   t0=%#010x|   t1=%#010x|    t2=%#010x|\n"
+	"|     s0=%#010x|   s1=%#010x|   a0=%#010x|    a1=%#010x|\n"
+	"|     a2=%#010x|   a3=%#010x|   a4=%#010x|    a5=%#010x|\n"
+	"|     a6=%#010x|   a7=%#010x|   s2=%#010x|    s3=%#010x|\n"
+	"|     s4=%#010x|   s5=%#010x|   s6=%#010x|    s7=%#010x|\n"
+	"|     s8=%#010x|   s9=%#010x|  s10=%#010x|   s11=%#010x|\n"
+	"|     t3=%#010x|   t4=%#010x|   t5=%#010x|    t6=%#010x|\n"
+	"----------------------------------------------------------------------\n"
+	"|     pc=%#010x|mtvec=%#010x| mepc=%#010x|mcause=%#010x|\n"
+	"|mstatus=%#010x|  mie=%#010x|mtval=%#010x|   mip=%#010x|\n"
+	"----------------------------------------------------------------------\n"
+	"> 0x%08x <%s>:    %s   %s,%s,0x%x\n"
+	"----------------------------------------------------------------------\n",
+	x[0],  x[1],  x[2],  x[3],
+	x[4],  x[5],  x[6],  x[7],
+	x[8],  x[9],  x[10], x[11],
+	x[12], x[13], x[14], x[15],
+	x[16], x[17], x[18], x[19],
+	x[20], x[21], x[22], x[23],
+	x[24], x[25], x[26], x[27],
+	x[28], x[29], x[30], x[31],
+	pci, mtvec, mepc, mcause,
+	mstatus, mie, mtval, mip,
+	pci, x_label[rd], nomeInst, x_label[rs1], x_label[rs2], imm_i
+);
+*/
 
 		switch(opcode) {
 			case 0b1110011: // SYSTEM Opcode
@@ -812,8 +817,8 @@ int main(int argc, char* argv[]) {
 						uart_thr = x[rs2] & 0xFF;
 
 						uart_lsr &= ~0x20;
-						fputc(uart_thr, stdout);
-						fflush(stdout);
+						fputc(uart_thr, terminal_out);
+						fflush(terminal_out);
 						uart_lsr |= 0x20; // THR empty
 
 						if (uart_ier & 0x02) {
@@ -861,7 +866,13 @@ int main(int argc, char* argv[]) {
 						printf("[DEBUG_PLIC] PC 0x%08x: sw para PLIC_PENDING_ADDR. Novo valor: 0x%08x\n", pci, x[rs2]);
 						#endif
 					} else if (addr == MSIP_ADDR) {
-						
+						if (x[rs2] & 1) {
+							// Se o valor escrito for 1 (ou ímpar), seta o bit MSIP.
+							mip |= MIP_MSIP;
+						} else {
+							// Se o valor escrito for 0 (ou par), limpa o bit MSIP.
+							mip &= ~MIP_MSIP;
+						}
 					} else if (addr == PLIC_ENABLE_ADDR) {
 						plic_enable = x[rs2];
 						#if DEBUG_PLIC
@@ -1294,6 +1305,8 @@ int main(int argc, char* argv[]) {
 
 	fclose(input);
 	fclose(output);
+	fclose(terminal_in);
+    fclose(terminal_out);
 	printf("--------------------------------------------------------------------------------\n");
 	return 0;
 }
