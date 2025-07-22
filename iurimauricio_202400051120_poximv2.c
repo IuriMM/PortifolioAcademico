@@ -1,11 +1,7 @@
 #include <stdint.h>
-
 #include <stdlib.h>
-
 #include <stdio.h>
-
 #include <string.h>
-
 #include <time.h> 
 
 #define MEM_SIZE (32 * 1024)
@@ -17,6 +13,7 @@
 #define PLIC_ENABLE_ADDR    0x0C002000
 #define PLIC_THRESHOLD_ADDR 0x0C200000
 #define PLIC_CLAIM_ADDR     0x0C200004
+#define MIP_MTIP (1 << 7)
 
 #define MSIP_ADDR 0x02000000
 #define UART_BASE_ADDR   0x10000000
@@ -161,22 +158,24 @@ int main(int argc, char* argv[]) {
 	while(run) {
 		mtime++;
 		
-		if ((double)(clock() - start_time) / CLOCKS_PER_SEC >= 0.05) {
+		if ((double)(clock() - start_time) / CLOCKS_PER_SEC >= 0.01) {
 			printf("\n--------------------------------------------------------------------------------\n");
 			printf("SIMULATOR TIMEOUT: A simulação excedeu 0.01 segundos e foi encerrada.\n");
 			break; // Sai do loop imediatamente
 		}
 		
-
+        // --- ALTERAÇÃO INICIADA: Lógica de checagem de interrupção movida e ajustada ---
 		if (mtime >= mtimecmp) {
 			mip |= (1 << 7); // Seta o bit MTIP (Machine Timer Interrupt Pending)
 		}
 		
+		// Lógica do PLIC para determinar se uma interrupção externa deve ser sinalizada
 		int irq_id = -1;
 		int highest_priority = 0;
-
 		for (int i = 0; i < NUM_INTERRUPTS; i++) {
+			// Verifica se a interrupção 'i' está pendente E habilitada
 			if ((plic_pending & (1 << i)) && (plic_enable & (1 << i))) {
+				// Verifica se a prioridade é maior que o limiar do core e a maior prioridade até agora
 				if (plic_priority[i] > plic_threshold && plic_priority[i] > highest_priority) {
 					highest_priority = plic_priority[i];
 					irq_id = i;
@@ -184,12 +183,14 @@ int main(int argc, char* argv[]) {
 			}
 		}
 
-		if (irq_id >= 0) {
-			printf("[INTERRUPT] IRQ %d com prioridade %d pendente!\n", irq_id, highest_priority);
-			mip |= (1 << 11); // MEIP
+		// Se o PLIC encontrou uma interrupção válida, eleva a linha de interrupção externa para a CPU
+		if (irq_id != -1) {
+			mip |= (1 << 11); // Seta o bit MEIP (Machine External Interrupt Pending)
 		} else {
-			mip &= ~(1 << 11);
+			// Caso contrário, garante que a linha de interrupção externa esteja baixa
+			mip &= ~(1 << 11); // Limpa o bit MEIP
 		}
+        // --- ALTERAÇÃO FINALIZADA ---
 
 		uint32_t mstatus_mie = (mstatus >> 3) & 1;
 		uint32_t mie_mtie = (mie >> 7) & 1;
@@ -206,6 +207,7 @@ int main(int argc, char* argv[]) {
 			char linha[256] = {0};	
 			snprintf(linha, sizeof(linha), ">interrupt:timer\tcause=0x%08x,epc=0x%08x,tval=0x%08x\n", mcause, mepc, mtval);
 			fputs(linha, output); // <--- Aqui você escreve na saída (arquivo .out)
+			printf("%s",linha);
 
 			// Calcula o endereço do handler
 			uint32_t handler_addr;
@@ -222,7 +224,7 @@ int main(int argc, char* argv[]) {
 				pc = handler_addr;
 			}
 
-			mstatus &= ~(1 << 3); // Desabilita interrupções globais (limpa MIE em mstatus)
+			mstatus = 0x1880;
 			continue;             // Pula para a próxima iteração para executar o handler
 		}
 			
@@ -255,10 +257,10 @@ int main(int argc, char* argv[]) {
 				pc = handler_addr;
 			}
 			
-			mstatus &= ~(1 << 3); // Desabilita interrupções globais (limpa MIE em mstatus)
+			mstatus = 0x1880;			
 			continue;             // Pula para a próxima iteração para executar o handler
 		}
-		// ...existing code...
+		
 		uint32_t mie_msie = (mie >> 3) & 1;
 		uint32_t mip_msip = (mip >> 3) & 1;
 
@@ -361,7 +363,7 @@ int main(int argc, char* argv[]) {
 				const uint16_t csr_addr = instruction >> 20;
 
 				if (funct3 == 0b000) {
-					if (csr_addr == 0x000) { // ecall
+					if (instruction == 0x00000073) { // ecall
 						strncpy(nomeInst, "ecall", sizeof(nomeInst));
 						snprintf(linha, sizeof(linha),
 							"0x%08x:ecall\n", pci);
@@ -369,25 +371,31 @@ int main(int argc, char* argv[]) {
 						
 						ecall(&pc); // Chama a nova função ecall
 						continue; // Pula para a próxima iteração do loop com o novo pc
+
+					}else if (instruction == 0x30200073) { // mret
+					strncpy(nomeInst, "mret", sizeof(nomeInst));
+					snprintf(linha, sizeof(linha),
+						"0x%08x: mret   (mstatus: 0x%08x -> ", pci, mstatus);
+					fputs(linha, output);
+
+					uint32_t mpie = (mstatus >> 7) & 1;
+
+					if (mpie) {
+						mstatus |= (1 << 3);  // Habilita MIE
+					} else {
+						mstatus &= ~(1 << 3); // Desabilita MIE
 					}
-					if (csr_addr == 0x302) { // mret
-						strncpy(nomeInst, "mret", sizeof(nomeInst));
-						snprintf(linha, sizeof(linha),
-							"0x%08x:mret   mepc=0x%08x\n", pci, mepc);
-						fputs(linha, output);
-						
-						// Restaura MIE do bit MPIE e define MPIE=1
-						uint32_t mpie = (mstatus >> 7) & 1;
-						if (mpie) {
-							mstatus |= (1 << 3);  // Habilita MIE
-						} else {
-							mstatus &= ~(1 << 3); // Desabilita MIE
-						}
-						mstatus |= (1 << 7);      // Define MPIE=1
-						
-						pc = mepc;
-						continue;
-					}
+
+					mstatus |= (1 << 7);
+
+					mstatus &= ~((1 << 11) | (1 << 12)); // Zera os bits 11 e 12 (MPP)
+
+					snprintf(linha, sizeof(linha), "0x%08x, pc -> 0x%08x)\n", mstatus, mepc);
+					fputs(linha, output);
+
+					pc = mepc;
+					continue;
+				}
 				}
 				if(funct3 == 0b000 && uimm == 1) {
 					// Outputting instruction to console
@@ -423,18 +431,18 @@ int main(int argc, char* argv[]) {
 				uint32_t old_val = *csr; // Sempre lê o valor antigo
 
 				switch (funct3) {
-					case 0b001: // CSRRW [cite: 375]
+					case 0b001: // CSRRW
 						strncpy(nomeInst, "csrrw", sizeof(nomeInst));
 						*csr = x[rs1];
 						if (csr_addr == 0x300 && funct3 == 0b001 && (*csr & (1 << 3))) {
 							trap_config_done = 1;
 						}
 						break;
-					case 0b010: // CSRRS [cite: 397]
+					case 0b010: // CSRRS
 						strncpy(nomeInst, "csrrs", sizeof(nomeInst));
 						*csr = old_val | x[rs1];
 						break;
-					case 0b011: // CSRRC [cite: 418]
+					case 0b011: // CSRRC
 						strncpy(nomeInst, "csrrc", sizeof(nomeInst));
 						*csr = old_val & (~x[rs1]);
 						break;
@@ -628,20 +636,38 @@ int main(int argc, char* argv[]) {
 					} else if (addr == PLIC_THRESHOLD_ADDR) {
 						strncpy(nomeInst, "lw", sizeof(nomeInst));
 						x[rd] = plic_threshold;
+					// --- ALTERAÇÃO INICIADA: Lógica de 'claim' do PLIC implementada ---
 					}else if (addr == PLIC_CLAIM_ADDR) {
 						strncpy(nomeInst, "lw", sizeof(nomeInst));
-						uint32_t interrupt_id = 0;
-						// Se UART (fonte 10) está pendente
-						if (plic_pending & (1 << 10)) {
-							interrupt_id = 10;
-							// Limpa o pending dessa fonte
-							plic_pending &= ~(1 << interrupt_id);
+						
+						// Encontra a interrupção de maior prioridade que está pendente e habilitada
+						int highest_prio_claim = 0;
+						int claimed_irq = 0; // 0 significa 'sem interrupção'
+						for (int i = 1; i < NUM_INTERRUPTS; i++) {
+							if ((plic_pending & (1 << i)) && (plic_enable & (1 << i)) && (plic_priority[i] > plic_threshold)) {
+								if (plic_priority[i] > highest_prio_claim) {
+									highest_prio_claim = plic_priority[i];
+									claimed_irq = i;
+								}
+							}
 						}
+
+						if (claimed_irq > 0) {
+							// Limpa o bit de pendência para a IRQ que está sendo reivindicada
+							plic_pending &= ~(1 << claimed_irq);
+							#if DEBUG_PLIC
+							printf("[DEBUG_PLIC] PC 0x%08x: lw de PLIC_CLAIM_ADDR. Reivindicando IRQ %d. plic_pending agora é 0x%08x\n", pci, claimed_irq, plic_pending);
+							#endif
+						}
+						
+						// O registrador de destino 'rd' recebe o ID da IRQ reivindicada
 						if (rd != 0) {
-							x[rd] = interrupt_id;
+							x[rd] = claimed_irq;
 						}
-						// Atualiza claim
-						plic_claim = interrupt_id;
+						
+						// A variável plic_claim pode ser usada para rastrear a IRQ reivindicada, se necessário
+						plic_claim = claimed_irq;
+					// --- ALTERAÇÃO FINALIZADA ---
 					}else if (addr >= MTIME_ADDR && addr < MTIME_ADDR + 8) {
 						strncpy(nomeInst, "lw", sizeof(nomeInst));
 						x[rd] = (uint32_t)mtime;
@@ -650,12 +676,12 @@ int main(int argc, char* argv[]) {
 						x[rd] = (uint32_t)mtimecmp;
 					} else {
 						strncpy(nomeInst, "lw", sizeof(nomeInst));
-						int32_t addr = x[rs1] + imm_i;
-						if ((addr - offset + 3) >= MEM_SIZE || addr < offset) { 
-							trigger_exception(LOAD_ACCESS_FAULT, addr, &pc);
+						int32_t addr_val = x[rs1] + imm_i;
+						if ((addr_val - offset + 3) >= MEM_SIZE || addr_val < offset) { 
+							trigger_exception(LOAD_ACCESS_FAULT, addr_val, &pc);
 							continue;
 							}
-							int32_t val = *(int32_t*)(mem + (addr - offset));
+							int32_t val = *(int32_t*)(mem + (addr_val - offset));
 							x[rd] = val;
 					}
 				} else if (funct3 == 0b100) { // lbu
@@ -784,23 +810,22 @@ int main(int argc, char* argv[]) {
 					
 					if (addr == UART_THR_ADDR) { // escrita = THR
 						uart_thr = x[rs2] & 0xFF;
-						uart_lsr |= 0x20; // THR empty
+
+						uart_lsr &= ~0x20;
 						fputc(uart_thr, stdout);
 						fflush(stdout);
+						uart_lsr |= 0x20; // THR empty
+
+						if (uart_ier & 0x02) {
+							plic_pending |= (1 << 10); // IRQ 10
+						}
+
 					} else if (addr == UART_IER_ADDR) {
 						uart_ier = x[rs2] & 0xFF;
-						if (uart_ier & 0x02) {
-						#if DEBUG_PLIC
-						printf("[DEBUG_PLIC] PC 0x%08x: Escrita em UART_IER_ADDR ativou pendência. plic_pending antes: 0x%08x\n", pci, plic_pending);
-						#endif
-						#if DEBUG_PLIC
-						printf("[DEBUG_PLIC] PC 0x%08x: Novo plic_pending: 0x%08x\n", pci, plic_pending);
-						#endif
-					}
 					} else if (addr == UART_LSR_ADDR) {
 						if (uart_ier & 0x02) {
 						plic_pending |= 0x400;
-					}
+						}
 						// LSR geralmente é somente leitura, ignore escrita
 					} else if ((addr - offset) >= MEM_SIZE) {
 							trigger_exception(STORE_ACCESS_FAULT, addr, &pc);
@@ -825,10 +850,10 @@ int main(int argc, char* argv[]) {
 					//sw
 					uint32_t addr = x[rs1] + imm_s;
 					if (addr >= 0x0C000000 && addr < 0x0C000000 + NUM_INTERRUPTS * 4) {
-						uint32_t irq_id = (addr - 0x0C000000) / 4;
-						plic_priority[irq_id] = x[rs2];
+						uint32_t irq_id_sw = (addr - 0x0C000000) / 4;
+						plic_priority[irq_id_sw] = x[rs2];
 						#if DEBUG_PLIC
-						printf("[DEBUG_PLIC] PC 0x%08x: sw para plic_priority[%u]. Novo valor: %u\n", pci, irq_id, x[rs2]);
+						printf("[DEBUG_PLIC] PC 0x%08x: sw para plic_priority[%u]. Novo valor: %u\n", pci, irq_id_sw, x[rs2]);
 						#endif
 					} else if (addr == PLIC_PENDING_ADDR) {
 						plic_pending = x[rs2];
@@ -836,7 +861,7 @@ int main(int argc, char* argv[]) {
 						printf("[DEBUG_PLIC] PC 0x%08x: sw para PLIC_PENDING_ADDR. Novo valor: 0x%08x\n", pci, x[rs2]);
 						#endif
 					} else if (addr == MSIP_ADDR) {
-						// ...
+						
 					} else if (addr == PLIC_ENABLE_ADDR) {
 						plic_enable = x[rs2];
 						#if DEBUG_PLIC
@@ -848,16 +873,21 @@ int main(int argc, char* argv[]) {
 						printf("[DEBUG_PLIC] PC 0x%08x: sw para PLIC_THRESHOLD_ADDR. Novo valor: %u\n", pci, x[rs2]);
 						#endif
 					} else if (addr == PLIC_CLAIM_ADDR) {
-						uint32_t claim_id = x[rs2];
+						uint32_t complete_id = x[rs2];
 						#if DEBUG_PLIC
-						printf("[DEBUG_PLIC] PC 0x%08x: sw para PLIC_CLAIM_ADDR. Completando IRQ %u. plic_pending antes: 0x%08x\n", pci, claim_id, plic_pending);
+						printf("[DEBUG_PLIC] PC 0x%08x: sw para PLIC_CLAIM_ADDR. Completando IRQ %u.\n", pci, complete_id);
 						#endif
-						plic_pending &= ~(1 << claim_id); // redundante, mas seguro
-						plic_claim = 0;
+						// A escrita em claim/complete sinaliza que a interrupção foi tratada.
+						// A lógica de 'claim' na leitura já limpou o bit de pendência.
+						// Esta parte é para sinalizar a conclusão. No nosso modelo simples,
+						// não precisamos fazer nada, mas em um PLIC real, isso habilitaria
+						// a mesma IRQ a ser sinalizada novamente se a condição persistir.
+						plic_claim = 0; // Reseta o estado de claim.
 					} else if (addr >= MTIME_ADDR && addr < MTIME_ADDR + 8) {
 						mtime = (mtime & 0xFFFFFFFF00000000) | x[rs2];
 					} else if (addr >= MTIMECMP_ADDR && addr < MTIMECMP_ADDR + 8) {
 						mtimecmp = (mtimecmp & 0xFFFFFFFF00000000) | x[rs2];
+						mip &= ~MIP_MTIP;
 					}else if ((addr < offset) || (addr - offset + sizeof(uint32_t) > MEM_SIZE)) {
 							trigger_exception(STORE_ACCESS_FAULT, addr, &pc);
 							continue;
